@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Caption</string>
+    <string name="loading_message">generating captions...</string>
+</resources>
