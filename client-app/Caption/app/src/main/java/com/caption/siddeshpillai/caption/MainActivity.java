@@ -1,9 +1,11 @@
 package com.caption.siddeshpillai.caption;
 
+import android.app.ProgressDialog;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.os.AsyncTask;
 import android.provider.MediaStore;
+import android.speech.tts.TextToSpeech;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
 import android.util.Log;
@@ -25,17 +27,29 @@ import com.google.api.services.vision.v1.model.EntityAnnotation;
 import com.google.api.services.vision.v1.model.Feature;
 import com.google.api.services.vision.v1.model.Image;
 
+import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends AppCompatActivity implements TextToSpeech.OnInitListener {
+
     private static final int CAMERA_REQUEST = 100;
     private ImageView imageView;
-    
+    private static final String CLOUD_VISION_API_KEY = "AIzaSyAOqmbezgCxBY8r3XtxF1VLOE4HkDSbq2Q";
+
     private static final String TAG = MainActivity.class.getSimpleName();
     private TextView mImageDetails;
+
+    private TextToSpeech tts;
+
+    Button voice;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -46,6 +60,17 @@ public class MainActivity extends AppCompatActivity {
         mImageDetails = (TextView) findViewById(R.id.textView);
 
         Button photoButton = (Button) this.findViewById(R.id.button);
+        voice = (Button) this.findViewById(R.id.button2);
+
+        tts = new TextToSpeech(getApplicationContext(), new TextToSpeech.OnInitListener() {
+            @Override
+            public void onInit(int status) {
+                if(status != TextToSpeech.ERROR) {
+                    tts.setLanguage(Locale.UK);
+                    System.out.println("Text to Speech Success");
+                }
+            }
+        });
 
         photoButton.setOnClickListener(new View.OnClickListener() {
 
@@ -55,6 +80,21 @@ public class MainActivity extends AppCompatActivity {
                 startActivityForResult(cameraIntent, CAMERA_REQUEST);
             }
         });
+
+
+        voice.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                tts.speak("It is a " + mImageDetails.getText().toString(), TextToSpeech.QUEUE_FLUSH, null);
+            }
+        });
+    }
+
+    private void speakOut() {
+
+        String text = mImageDetails.getText().toString();
+
+        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null);
     }
 
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
@@ -62,14 +102,117 @@ public class MainActivity extends AppCompatActivity {
             Bitmap photo = (Bitmap) data.getExtras().get("data");
             imageView.setImageBitmap(photo);
             try {
-                callVision(photo);
+                callCloudVision(photo);
             } catch (IOException e) {
                 e.printStackTrace();
             }
         }
     }
 
-    private void callVision(final Bitmap bitmap) throws IOException {
+
+    private String convertResponseToString(BatchAnnotateImagesResponse response) {
+
+        String message = "\n\n";
+
+        List<EntityAnnotation> labels = response.getResponses().get(0).getLabelAnnotations();
+
+        if (labels != null) {
+            for (EntityAnnotation label : labels) {
+                message = label.getDescription();
+                message += "\n";
+                break;
+            }
+        } else {
+            message += "nothing";
+        }
+        return message;
+    }
+
+    @Override
+    public void onInit(int status) {
+        if (status == TextToSpeech.SUCCESS) {
+
+            int result = tts.setLanguage(Locale.US);
+
+            if (result == TextToSpeech.LANG_MISSING_DATA
+                    || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                Log.e("TTS", "This Language is not supported");
+            } else {
+                voice.setEnabled(true);
+                speakOut();
+            }
+
+        } else {
+            Log.e("TTS", "Initilization Failed!");
+        }
+    }
+
+    private class AsyncAction extends AsyncTask<Void, Void, Void> {
+
+        private static final String SERVER_IP_ADDR = "192.168.1.160";
+        private static final int SERVER_PORT = 9000;
+        private Socket socket = null;
+        FileInputStream sendFile;
+        BufferedInputStream bis;
+        OutputStream os;
+        private final ProgressDialog dialog = new ProgressDialog(MainActivity.this);
+
+        @Override
+        protected void onPreExecute() {
+            super.onPreExecute();
+            dialog.setMessage("Requesting the captions to the server");
+            dialog.show();
+        }
+
+        @Override
+        protected void onPostExecute(Void aVoid) {
+            super.onPostExecute(aVoid);
+            dialog.dismiss();
+        }
+
+        @Override
+        protected Void doInBackground(Void... params) {
+
+            try {
+                socket = new Socket(SERVER_IP_ADDR, SERVER_PORT);
+                os = socket.getOutputStream();
+                File fileName = new File("/Users/siddeshpillai/Documents/backup/Project/Services/image.png");
+                sendFile = new FileInputStream(fileName);
+                bis = new BufferedInputStream(sendFile);
+
+                byte[] contents;
+                long fileLength = fileName.length();
+                long current = 0;
+
+                while(current != fileLength) {
+                    int size = 10000;
+                    if(fileLength - current >= size)
+                        current += size;
+                    else{
+                        size = (int)(fileLength - current);
+                        current = fileLength;
+                    }
+                    contents = new byte[size];
+                    bis.read(contents, 0, size);
+                    os.write(contents);
+                    System.out.print("Sending file ... " + (current * 100) / fileLength + "% complete!");
+                    os.flush();
+
+                    //File transfer done. Close the socket connection!
+                    socket.close();
+                    System.out.println("File sent succesfully!");
+                }
+
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+
+            return null;
+        }
+
+    }
+
+    private void callCloudVision(final Bitmap bitmap) throws IOException {
         // Switch text to loading
         mImageDetails.setText(R.string.loading_message);
 
@@ -82,6 +225,8 @@ public class MainActivity extends AppCompatActivity {
                     GsonFactory jsonFactory = GsonFactory.getDefaultInstance();
 
                     Vision.Builder builder = new Vision.Builder(httpTransport, jsonFactory, null);
+                    builder.setVisionRequestInitializer(new
+                            VisionRequestInitializer(CLOUD_VISION_API_KEY));
                     Vision vision = builder.setApplicationName("Caption").build();
 
                     BatchAnnotateImagesRequest batchAnnotateImagesRequest =
@@ -116,8 +261,10 @@ public class MainActivity extends AppCompatActivity {
 
                     Vision.Images.Annotate annotateRequest =
                             vision.images().annotate(batchAnnotateImagesRequest);
+                    // Due to a bug: requests to Vision API containing large images fail when GZipped.
                     annotateRequest.setDisableGZipContent(true);
-                    
+                    Log.d(TAG, "created Cloud Vision request object, sending request");
+
                     BatchAnnotateImagesResponse response = annotateRequest.execute();
                     return convertResponseToString(response);
 
@@ -127,7 +274,7 @@ public class MainActivity extends AppCompatActivity {
                     Log.d(TAG, "failed to make API request because of other IOException " +
                             e.getMessage());
                 }
-                return "Request failed.";
+                return "Cloud Vision API request failed. Check logs for details.";
             }
 
             protected void onPostExecute(String result) {
@@ -136,23 +283,5 @@ public class MainActivity extends AppCompatActivity {
         }.execute();
     }
 
-    // extract the best caption
-    private String convertResponseToString(BatchAnnotateImagesResponse response) {
-
-        String message = "\n\n";
-
-        List<EntityAnnotation> labels = response.getResponses().get(0).getLabelAnnotations();
-
-        if (labels != null) {
-            for (EntityAnnotation label : labels) {
-                message = label.getDescription();
-                message += "\n";
-                break;
-            }
-        } else {
-            message += "nothing";
-        }
-        return message;
-    }
 
 }
