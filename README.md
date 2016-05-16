@@ -29,4 +29,3 @@ Download the pre-trained model [here](http://cs.stanford.edu/people/karpathy/neu
 2. Change the IP to your network ip
 3. Run the project
 
-
